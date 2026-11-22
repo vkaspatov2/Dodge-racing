@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dodge Challenger — Street Racing</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#10141c;color:#fff;font-family:Arial,sans-serif;overflow:hidden}
+  #game{display:block;width:100vw;height:100vh;background:#202a27}
+  .hud{position:fixed;top:14px;left:14px;display:flex;gap:10px;flex-wrap:wrap;z-index:2}
+  .panel{background:#101722dd;border:1px solid #ffffff25;border-radius:12px;padding:10px 14px;min-width:90px;box-shadow:0 5px 18px #0005}
+  .panel small{display:block;color:#aab6c7;font-size:11px;text-transform:uppercase;letter-spacing:1px}
+  .panel strong{font-size:20px}
+  #help{position:fixed;top:14px;right:14px;background:#101722dd;border:1px solid #ffffff25;border-radius:12px;padding:12px 15px;font-size:12px;line-height:1.7;color:#dce5ef}
+  #overlay{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#05090dcc;z-index:5}
+  .menu{width:min(440px,90vw);padding:28px;background:#141d29;border:1px solid #ffffff25;border-radius:20px;text-align:center;box-shadow:0 20px 70px #0009}
+  .menu h1{margin:0 0 8px;font-size:30px;letter-spacing:1px}
+  .menu p{color:#b7c4d5;line-height:1.5}
+  button{border:0;border-radius:12px;background:#ef3f35;color:white;font-size:17px;font-weight:bold;padding:14px 28px;cursor:pointer}
+  button:active{transform:scale(.97)}
+  #mobile{position:fixed;bottom:22px;left:0;right:0;display:none;justify-content:space-between;padding:0 22px;z-index:3;pointer-events:none}
+  .cluster{display:flex;gap:12px;pointer-events:auto}
+  .ctrl{width:66px;height:66px;border-radius:18px;background:#111a27bb;border:1px solid #ffffff55;color:white;font-size:25px;touch-action:none;user-select:none}
+  .ctrl.gas{background:#e63e35bb}
+  @media(max-width:800px){#help{display:none}#mobile{display:flex}.panel{padding:8px 10px}.panel strong{font-size:17px}}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div class="hud">
+  <div class="panel"><small>Скорость</small><strong><span id="speed">0</span> км/ч</strong></div>
+  <div class="panel"><small>Очки</small><strong id="score">0</strong></div>
+  <div class="panel"><small>Состояние</small><strong id="damage">100%</strong></div>
+</div>
+<div id="help">УПРАВЛЕНИЕ<br>W / ↑ — газ<br>S / ↓ — тормоз / назад<br>A D / ← → — поворот<br>Пробел — ручник</div>
+<div id="mobile">
+  <div class="cluster">
+    <button class="ctrl" data-key="ArrowLeft">◀</button>
+    <button class="ctrl" data-key="ArrowRight">▶</button>
+  </div>
+  <div class="cluster">
+    <button class="ctrl" data-key="Space">⟲</button>
+    <button class="ctrl gas" data-key="ArrowDown">▼</button>
+    <button class="ctrl gas" data-key="ArrowUp">▲</button>
+  </div>
+</div>
+<div id="overlay">
+  <div class="menu">
+    <h1>DODGE CHALLENGER</h1>
+    <p>Уличная гонка. Уходи от трафика, собирай очки и постарайся не разбить машину.</p>
+    <p>Столкновения влияют на скорость и состояние автомобиля.</p>
+    <button id="start">НАЧАТЬ ГОНКУ</button>
+  </div>
+</div>
+<script>
+(() => {
+  const canvas=document.getElementById('game'),ctx=canvas.getContext('2d');
+  const speedEl=document.getElementById('speed'),scoreEl=document.getElementById('score'),damageEl=document.getElementById('damage');
+  let W,H,dpr,keys={},running=false,last=0,score=0,roadOffset=0,spawn=0,shake=0;
+  const car={x:0,y:0,w:48,h:88,v:0,steer:0,health:100,hitCooldown:0,angle:0};
+  let traffic=[];
+  function resize(){dpr=Math.min(devicePixelRatio||1,2);W=innerWidth;H=innerHeight;canvas.width=W*dpr;canvas.height=H*dpr;canvas.style.width=W+'px';canvas.style.height=H+'px';ctx.setTransform(dpr,0,0,dpr,0,0);car.y=H*.76;if(!car.x)car.x=W/2;}
+  addEventListener('resize',resize);resize();
+  addEventListener('keydown',e=>{keys[e.code]=true;if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space'].includes(e.code))e.preventDefault();});
+  addEventListener('keyup',e=>keys[e.code]=false);
+  document.querySelectorAll('.ctrl').forEach(b=>{
+    const k=b.dataset.key;
+    b.addEventListener('pointerdown',e=>{e.preventDefault();keys[k]=true;b.setPointerCapture(e.pointerId)});
+    ['pointerup','pointercancel','lostpointercapture'].forEach(ev=>b.addEventListener(ev,()=>keys[k]=false));
+  });
+  const down=(...codes)=>codes.some(k=>keys[k]);
+  function road(){return {left:W*.19,right:W*.81,width:W*.62};}
+  function drawRoad(dt){
+    const r=road();ctx.fillStyle='#285638';ctx.fillRect(0,0,W,H);
+    // roadside texture
+    for(let i=0;i<24;i++){let y=((i*97+roadOffset*.7)%(H+80))-40;ctx.fillStyle=i%2?'#347044':'#214a32';ctx.fillRect(0,y,r.left-10,3);ctx.fillRect(r.right+10,y,W-r.right,3);}
+    ctx.fillStyle='#333943';ctx.fillRect(r.left,0,r.width,H);
+    ctx.fillStyle='#e7e5d8';ctx.fillRect(r.left,0,5,H);ctx.fillRect(r.right-5,0,5,H);
+    // lane markers
+    ctx.fillStyle='#e9e6d4';
+    for(let y=-60+(roadOffset%100);y<H;y+=100){ctx.fillRect(W/2-3,y,6,48);ctx.fillRect(r.left+r.width/3-2,y,4,48);ctx.fillRect(r.left+2*r.width/3-2,y,4,48);}
+    // rumble strips
+    for(let y=-40+(roadOffset%48);y<H;y+=48){ctx.fillStyle='#f2f2e9';ctx.fillRect(r.left-9,y,9,24);ctx.fillRect(r.right,y,9,24);ctx.fillStyle='#d83b35';ctx.fillRect(r.left-9,y+24,9,24);ctx.fillRect(r.right,y+24,9,24);}
+  }
+  function roundedRect(x,y,w,h,r,color){ctx.fillStyle=color;ctx.beginPath();ctx.roundRect(x,y,w,h,r);ctx.fill();}
+  function drawCar(x,y,w,h,color,player=false,angle=0){
+    ctx.save();ctx.translate(x,y);ctx.rotate(angle);
+    // shadow
+    roundedRect(-w/2+3,-h/2+5,w,h,10,'#0007');
+    // tires
+    roundedRect(-w/2-4,-h*.32,8,22,3,'#111');roundedRect(w/2-4,-h*.32,8,22,3,'#111');
+    roundedRect(-w/2-4,h*.15,8,22,3,'#111');roundedRect(w/2-4,h*.15,8,22,3,'#111');
+    // body
+    roundedRect(-w/2,-h/2,w,h,11,color);
+    // hood and trunk details
+    roundedRect(-w*.39,-h*.36,w*.78,h*.23,6,player?'#d52d29':'#222a35');
+    roundedRect(-w*.39,h*.22,w*.78,h*.17,5,player?'#b92522':'#303946');
+    // windshield
+    ctx.fillStyle='#152c3a';ctx.beginPath();ctx.moveTo(-w*.36,-h*.12);ctx.lineTo(w*.36,-h*.12);ctx.lineTo(w*.29,h*.12);ctx.lineTo(-w*.29,h*.12);ctx.closePath();ctx.fill();
+    // stripe
+    if(player){ctx.fillStyle='#f4f0df';ctx.fillRect(-w*.045,-h*.45,w*.09,h*.88);ctx.fillStyle='#fff6d7';ctx.fillRect(-w*.43,-h*.43,w*.15,5);ctx.fillRect(w*.28,-h*.43,w*.15,5);}
+    ctx.fillStyle='#ffefb0';ctx.fillRect(-w*.34,-h*.47,w*.2,5);ctx.fillRect(w*.14,-h*.47,w*.2,5);
+    ctx.fillStyle='#e63830';ctx.fillRect(-w*.34,h*.43,w*.2,5);ctx.fillRect(w*.14,h*.43,w*.2,5);
+    ctx.restore();
+  }
+  function spawnTraffic(){
+    const r=road(),lanes=[r.left+r.width*.17,r.left+r.width*.39,r.left+r.width*.61,r.left+r.width*.83];
+    const lane=lanes[Math.floor(Math.random()*lanes.length)];
+    traffic.push({x:lane,y:-110,w:43+Math.random()*5,h:78+Math.random()*10,v:2+Math.random()*2,color:['#e4b23c','#4c91c8','#b9c1c8','#8c5cb4'][Math.floor(Math.random()*4)]});
+  }
+  function collide(a,b){return Math.abs(a.x-b.x)<(a.w+b.w)*.39&&Math.abs(a.y-b.y)<(a.h+b.h)*.42;}
+  function update(dt){
+    const step=dt/16.67,r=road();
+    const gas=down('ArrowUp','KeyW'),brake=down('ArrowDown','KeyS'),left=down('ArrowLeft','KeyA'),right=down('ArrowRight','KeyD'),hand=down('Space');
+    if(gas)car.v+=.13*step;else car.v-=.035*step;
+    if(brake)car.v-=.2*step;
+    car.v=Math.max(-2,Math.min(10,car.v));
+    const steer=(right?1:0)-(left?1:0);
+    car.steer+=(steer-car.steer)*Math.min(1,.18*step);
+    const grip = hand ? 0.75 : 1;
+    car.x+=car.steer*(2.3+Math.abs(car.v)*.75)*step*grip;
+    car.x+=car.v*.05*step;
+    car.x=Math.max(r.left+car.w*.65,Math.min(r.right-car.w*.65,car.x));
+    car.angle=car.steer*.13*Math.min(1,Math.abs(car.v)/4);
+    roadOffset+=Math.max(1,car.v*5)*step;
+    spawn-=dt;if(spawn<=0){spawnTraffic();spawn=Math.max(430,1050-car.v*45);}
+    traffic.forEach(t=>{t.y+=(car.v*7-t.v*2+3)*step;});
+    traffic=traffic.filter(t=>t.y<H+150);
+    if(car.hitCooldown>0)car.hitCooldown-=dt;
+    for(const t of traffic){
+      if(collide(car,t)&&car.hitCooldown<=0){
+        car.v*=.42;car.health=Math.max(0,car.health-12);car.hitCooldown=900;shake=12;
+        t.y+=75;t.x+=Math.random()>.5?45:-45;
+      }
+    }
+    // shoulder impact
+    if(car.x<r.left+car.w*.6||car.x>r.right-car.w*.6){car.v*=.985;car.health=Math.max(0,car.health-.025*step);}
+    score+=Math.max(0,car.v)*.035*step;
+    shake=Math.max(0,shake-.7*step);
+    speedEl.textContent=Math.round(Math.abs(car.v)*22);scoreEl.textContent=Math.floor(score);damageEl.textContent=Math.round(car.health)+'%';
+    if(car.health<=0){running=false;document.querySelector('#overlay').style.display='flex';document.querySelector('.menu h1').textContent='МАШИНА РАЗБИТА';document.querySelector('.menu p').textContent='Очки: '+Math.floor(score)+'. Попробуй ещё раз!';document.querySelector('#start').textContent='ЕЩЁ ОДИН ЗАЕЗД';}
+  }
+  function render(){
+    ctx.save();if(shake)ctx.translate((Math.random()-.5)*shake,(Math.random()-.5)*shake);
+    drawRoad();
+    traffic.forEach(t=>drawCar(t.x,t.y,t.w,t.h,t.color,false));
+    // Dodge Challenger-like muscle car
+    if(car.hitCooldown>0&&Math.floor(car.hitCooldown/90)%2===0){}else drawCar(car.x,car.y,car.w,car.h,'#e63830',true,car.angle);
+    // speed streaks at high speed
+    if(car.v>7){ctx.strokeStyle='#ffffff35';ctx.lineWidth=2;for(let i=0;i<8;i++){let x=Math.random()*W,y=Math.random()*H;ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x,y+18+car.v*3);ctx.stroke();}}
+    ctx.restore();
+  }
+  function loop(now){const dt=Math.min(40,now-last||16);last=now;if(running)update(dt);render();requestAnimationFrame(loop);}
+  document.getElementById('start').addEventListener('click',()=>{
+    car.x=W/2;car.y=H*.76;car.v=0;car.health=100;car.steer=0;car.angle=0;traffic=[];score=0;spawn=500;shake=0;keys={};
+    document.querySelector('.menu h1').textContent='DODGE CHALLENGER';
+    document.querySelector('.menu p').textContent='Уличная гонка. Уходи от трафика, собирай очки и постарайся не разбить машину.';
+    document.getElementById('start').textContent='НАЧАТЬ ГОНКУ';
+    document.getElementById('overlay').style.display='none';running=true;last=performance.now();
+  });
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
